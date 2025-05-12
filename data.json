@@ -1,0 +1,36 @@
+{
+  "customer": {
+    "name": "ABC Şirketi"
+  },
+  "contractNo": "L-2024-001",
+  "asset": {
+    "type": "Araç",
+    "model": "Toyota Corolla"
+  },
+  "financialTerms": {
+    "leasingAmount": 250000,
+    "term": 24,
+    "paymentFrequency": {
+      "displayName": "Aylık"
+    }
+  },
+  "startDate": "2024-01-01",
+  "paymentSchedule": [
+    {
+      "installmentNo": 1,
+      "paymentDate": "2024-02-01",
+      "paymentAmount": 11250,
+      "principal": 10000,
+      "interest": 1000,
+      "kdv": 250,
+      "remainingPrincipal": 240000
+    }
+  ],
+  "summary": {
+    "totalPayment": 270000,
+    "totalPrincipal": 250000,
+    "totalInterest": 18000,
+    "totalKdv": 2000,
+    "effectiveInterestRate": 1.7
+  }
+}
