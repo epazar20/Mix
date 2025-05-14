@@ -48,7 +48,7 @@ public class JsonFormatConverter {
             }
             return node;
 
-        } else if (node.isObject() || node.isArray()) {
+        } else if (node.isArray() || node.isObject()) {
             // Tarihler için dönüştürme işlemi yap
             if (node.size() == 3 && node.get(0).isInt() && node.get(1).isInt() && node.get(2).isInt()) {
                 try {
