@@ -51,6 +51,7 @@ public class JsonFormatConverter {
         } else if (node.isArray() || node.isObject()) {
             // Tarihler için dönüştürme işlemi yap
             if (node.size() == 3 && node.get(0).isInt() && node.get(1).isInt() && node.get(2).isInt()) {
+                // Tarih (YYYY, MM, DD) array'i
                 try {
                     LocalDate date = LocalDate.of(node.get(0).asInt(), node.get(1).asInt(), node.get(2).asInt());
                     return new TextNode(date.format(dateFormatter));
@@ -62,6 +63,7 @@ public class JsonFormatConverter {
             if (node.size() == 5 &&
                 node.get(0).isInt() && node.get(1).isInt() && node.get(2).isInt() &&
                 node.get(3).isInt() && node.get(4).isInt()) {
+                // Tarih-Saat (YYYY, MM, DD, HH, MM) array'i
                 try {
                     LocalDateTime dateTime = LocalDateTime.of(
                         node.get(0).asInt(), node.get(1).asInt(), node.get(2).asInt(),
