@@ -1,0 +1,80 @@
+public class JsonPreProcessor {
+    private static final DateTimeFormatter outputFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
+
+    public static JsonNode enrichDatesWithFormattedStrings(JsonNode node) {
+        if (node.isObject()) {
+            ObjectNode object = (ObjectNode) node;
+            Iterator<Map.Entry<String, JsonNode>> fields = object.fields();
+            List<String> keys = new ArrayList<>();
+            fields.forEachRemaining(e -> keys.add(e.getKey()));
+
+            for (String key : keys) {
+                JsonNode value = object.get(key);
+                JsonNode enrichedValue = enrichDatesWithFormattedStrings(value);
+                object.set(key, enrichedValue);
+
+                // Inline string tarihleri (e.g., "1989-02-02T00:00:00")
+                if (value.isTextual()) {
+                    String strVal = value.asText();
+                    String formatted = tryParseDate(strVal);
+                    if (formatted != null) {
+                        object.put(key + "Formatted", formatted); // new field with formatted value
+                    }
+                }
+
+                // Date as array [yyyy,MM,dd] or [yyyy,MM,dd,HH,mm]
+                if (value.isArray() && isLikelyDateArray(value)) {
+                    String formatted = tryParseArrayDate(value);
+                    if (formatted != null) {
+                        object.put(key + "Formatted", formatted);
+                    }
+                }
+            }
+        } else if (node.isArray()) {
+            ArrayNode array = (ArrayNode) node;
+            for (int i = 0; i < array.size(); i++) {
+                array.set(i, enrichDatesWithFormattedStrings(array.get(i)));
+            }
+        }
+        return node;
+    }
+
+    private static boolean isLikelyDateArray(JsonNode array) {
+        int size = array.size();
+        return size >= 3 && size <= 6 &&
+               array.get(0).isInt() && array.get(1).isInt() && array.get(2).isInt();
+    }
+
+    private static String tryParseDate(String dateStr) {
+        String[] patterns = {
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd HH:mm:ss",
+            "yyyy-MM-dd"
+        };
+        for (String pattern : patterns) {
+            try {
+                LocalDateTime ldt = LocalDateTime.parse(dateStr, DateTimeFormatter.ofPattern(pattern));
+                return ldt.format(outputFormatter);
+            } catch (Exception ignored) {}
+            try {
+                LocalDate ld = LocalDate.parse(dateStr, DateTimeFormatter.ofPattern(pattern));
+                return ld.atStartOfDay().format(outputFormatter);
+            } catch (Exception ignored) {}
+        }
+        return null;
+    }
+
+    private static String tryParseArrayDate(JsonNode array) {
+        try {
+            int year = array.get(0).asInt();
+            int month = array.get(1).asInt();
+            int day = array.get(2).asInt();
+            int hour = array.size() > 3 ? array.get(3).asInt() : 0;
+            int minute = array.size() > 4 ? array.get(4).asInt() : 0;
+            LocalDateTime dt = LocalDateTime.of(year, month, day, hour, minute);
+            return dt.format(outputFormatter);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+}
