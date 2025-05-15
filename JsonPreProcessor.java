@@ -7,12 +7,23 @@ import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 
-public class JsonPreProcessor {
+public class JsonConverter {
 
+    private static final ObjectMapper mapper = new ObjectMapper();
     private static final DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
     private static final DecimalFormat decimalFormatter = new DecimalFormat("#,##0.00");
 
-    public static JsonNode enrichDatesAndNumbersWithFormattedStrings(JsonNode node) {
+    public static String enrichDatesAndNumbersWithFormattedStrings(String jsonString) {
+        try {
+            JsonNode rootNode = mapper.readTree(jsonString);
+            JsonNode enrichedNode = enrichNode(rootNode);
+            return mapper.writeValueAsString(enrichedNode);
+        } catch (Exception e) {
+            throw new RuntimeException("JSON işlenirken hata oluştu: " + e.getMessage(), e);
+        }
+    }
+
+    private static JsonNode enrichNode(JsonNode node) {
         if (node.isObject()) {
             ObjectNode object = (ObjectNode) node;
             Iterator<Map.Entry<String, JsonNode>> fields = object.fields();
@@ -21,26 +32,23 @@ public class JsonPreProcessor {
 
             for (String key : keys) {
                 JsonNode value = object.get(key);
-                JsonNode processedValue = enrichDatesAndNumbersWithFormattedStrings(value);
+                JsonNode processedValue = enrichNode(value);
                 object.set(key, processedValue);
 
-                // Date as text (ISO or other formats)
                 if (value.isTextual()) {
                     String text = value.asText();
-                    String formatted = tryFormatDate(text);
-                    if (formatted != null) {
-                        object.put(key + "Formatted", formatted);
-                        continue; // Skip number parsing if date matched
+                    String formattedDate = tryFormatDate(text);
+                    if (formattedDate != null) {
+                        object.put(key + "Formatted", formattedDate);
+                        continue;
                     }
 
-                    // Try parsing string as number
                     String formattedNumber = tryFormatDecimal(text);
                     if (formattedNumber != null) {
                         object.put(key + "Formatted", formattedNumber);
                     }
                 }
 
-                // Date as array (e.g. [2024, 5, 10])
                 if (value.isArray() && isLikelyDateArray(value)) {
                     String formattedDate = tryParseArrayDate(value);
                     if (formattedDate != null) {
@@ -48,7 +56,6 @@ public class JsonPreProcessor {
                     }
                 }
 
-                // Number (Double, Float, BigDecimal)
                 if (value.isFloatingPointNumber()) {
                     object.put(key + "Formatted", decimalFormatter.format(value.doubleValue()));
                 }
@@ -56,16 +63,15 @@ public class JsonPreProcessor {
         } else if (node.isArray()) {
             ArrayNode array = (ArrayNode) node;
             for (int i = 0; i < array.size(); i++) {
-                array.set(i, enrichDatesAndNumbersWithFormattedStrings(array.get(i)));
+                array.set(i, enrichNode(array.get(i)));
             }
         }
         return node;
     }
 
     private static boolean isLikelyDateArray(JsonNode array) {
-        int size = array.size();
-        return size >= 3 && size <= 6 &&
-                array.get(0).isInt() && array.get(1).isInt() && array.get(2).isInt();
+        return array.size() >= 3 && array.size() <= 6 &&
+               array.get(0).isInt() && array.get(1).isInt() && array.get(2).isInt();
     }
 
     private static String tryParseArrayDate(JsonNode array) {
