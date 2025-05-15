@@ -1,0 +1,128 @@
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.*;
+
+import java.math.BigDecimal;
+import java.text.DecimalFormat;
+import java.time.*;
+import java.time.format.DateTimeFormatter;
+import java.util.Iterator;
+import java.util.Map;
+
+public class JsonConverter {
+
+    private static final DecimalFormat moneyFormat = new DecimalFormat("###,##0.00 'TL'");
+    private static final DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy");
+    private static final DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
+
+    public static String convertNumbersAndDates(String json) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        JsonNode root = mapper.readTree(json);
+        processNode(root);
+        return mapper.writeValueAsString(root);
+    }
+
+    private static void processNode(JsonNode node) {
+        if (node instanceof ObjectNode objNode) {
+            Iterator<Map.Entry<String, JsonNode>> fields = objNode.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> entry = fields.next();
+                JsonNode child = entry.getValue();
+
+                if (child instanceof ArrayNode arrayNode && isDateArray(arrayNode)) {
+                    String formattedDate = formatDateArray(arrayNode);
+                    objNode.put(entry.getKey(), formattedDate);
+                } else if (child.isTextual() && isDateString(child.asText())) {
+                    String formattedDate = formatDateString(child.asText());
+                    objNode.put(entry.getKey(), formattedDate);
+                } else if (child instanceof ObjectNode || child instanceof ArrayNode) {
+                    processNode(child);
+                } else if (child.isNumber()) {
+                    JsonNode formatted = formatNumber(child);
+                    objNode.set(entry.getKey(), formatted);
+                }
+            }
+        } else if (node instanceof ArrayNode arrayNode) {
+            for (int i = 0; i < arrayNode.size(); i++) {
+                JsonNode child = arrayNode.get(i);
+                if (child instanceof ObjectNode || child instanceof ArrayNode) {
+                    processNode(child);
+                } else if (child.isTextual() && isDateString(child.asText())) {
+                    arrayNode.set(i, new TextNode(formatDateString(child.asText())));
+                } else if (child instanceof ArrayNode array && isDateArray(array)) {
+                    arrayNode.set(i, new TextNode(formatDateArray(array)));
+                } else if (child.isNumber()) {
+                    arrayNode.set(i, formatNumber(child));
+                }
+            }
+        }
+    }
+
+    private static boolean isDateArray(ArrayNode array) {
+        int size = array.size();
+        if (size == 3 || size == 5) {
+            for (JsonNode item : array) {
+                if (!item.isInt()) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private static String formatDateArray(ArrayNode array) {
+        try {
+            int year = array.get(0).asInt();
+            int month = array.get(1).asInt();
+            int day = array.get(2).asInt();
+
+            if (array.size() == 3) {
+                LocalDate date = LocalDate.of(year, month, day);
+                return date.format(dateFormatter);
+            } else {
+                int hour = array.get(3).asInt();
+                int minute = array.get(4).asInt();
+                LocalDateTime dateTime = LocalDateTime.of(year, month, day, hour, minute);
+                return dateTime.format(dateTimeFormatter);
+            }
+        } catch (Exception e) {
+            return array.toString();
+        }
+    }
+
+    private static boolean isDateString(String value) {
+        try {
+            LocalDate.parse(value);
+            return true;
+        } catch (Exception ignored) {}
+        try {
+            LocalDateTime.parse(value);
+            return true;
+        } catch (Exception ignored) {}
+        try {
+            OffsetDateTime.parse(value);
+            return true;
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    private static String formatDateString(String value) {
+        try {
+            return LocalDate.parse(value).format(dateFormatter);
+        } catch (Exception ignored) {}
+        try {
+            return LocalDateTime.parse(value).format(dateTimeFormatter);
+        } catch (Exception ignored) {}
+        try {
+            return OffsetDateTime.parse(value).format(dateTimeFormatter);
+        } catch (Exception ignored) {}
+        return value;
+    }
+
+    private static TextNode formatNumber(JsonNode node) {
+        if (node.isFloatingPointNumber() || node.isBigDecimal()) {
+            BigDecimal decimal = node.decimalValue();
+            return TextNode.valueOf(moneyFormat.format(decimal));
+        }
+        return TextNode.valueOf(node.asText());
+    }
+}
