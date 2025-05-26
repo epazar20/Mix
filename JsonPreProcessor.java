@@ -17,7 +17,7 @@ public class JsonPreProcessor {
     private static final DecimalFormat decimalFormatter = new DecimalFormat("#,##0.00");
 
     public static String enrichDatesAndNumbersWithFormattedStrings(String jsonString) {
-        return enrichDatesAndNumbersWithFormattedStrings(jsonString, new HashMap<>());
+        return enrichDatesAndNumbersWithFormattedStrings(jsonString, Collections.emptyMap());
     }
 
     public static String enrichDatesAndNumbersWithFormattedStrings(String jsonString, Map<String, String> customFormatters) {
@@ -42,18 +42,17 @@ public class JsonPreProcessor {
                 JsonNode processedValue = enrichNode(value, customFormatters);
                 object.set(key, processedValue);
 
-                String customPattern = customFormatters.get(key);
-                if (customPattern != null && value.isTextual()) {
-                    String text = value.asText();
-                    String formatted = tryCustomFormat(text, customPattern);
-                    if (formatted != null) {
-                        object.put(key + "Formatted", formatted);
-                        continue;
-                    }
-                }
+                String formatSpec = customFormatters.get(key);
 
                 if (value.isTextual()) {
                     String text = value.asText();
+
+                    String customFormatted = tryCustomFormat(text, formatSpec);
+                    if (customFormatted != null) {
+                        object.put(key + "Formatted", customFormatted);
+                        continue;
+                    }
+
                     String formattedDate = tryFormatDate(text);
                     if (formattedDate != null) {
                         object.put(key + "Formatted", formattedDate);
@@ -67,13 +66,20 @@ public class JsonPreProcessor {
                 }
 
                 if (value.isArray() && isLikelyDateArray(value)) {
-                    String formattedDate = tryParseArrayDate(value);
+                    String formattedDate = tryParseArrayDate(value, formatSpec);
                     if (formattedDate != null) {
                         object.put(key + "Formatted", formattedDate);
                     }
                 }
 
                 if (value.isFloatingPointNumber()) {
+                    if (formatSpec != null && formatSpec.toUpperCase().startsWith("DECIMAL|") || !formatSpec.contains("|")) {
+                        String formatted = tryCustomFormat(String.valueOf(value.doubleValue()), formatSpec);
+                        if (formatted != null) {
+                            object.put(key + "Formatted", formatted);
+                            continue;
+                        }
+                    }
                     object.put(key + "Formatted", decimalFormatter.format(value.doubleValue()));
                 }
             }
@@ -91,23 +97,29 @@ public class JsonPreProcessor {
                 array.get(0).isInt() && array.get(1).isInt() && array.get(2).isInt();
     }
 
-    private static String tryParseArrayDate(JsonNode array) {
+    private static String tryParseArrayDate(JsonNode array, String formatSpec) {
         try {
             int year = array.get(0).asInt();
             int month = array.get(1).asInt();
             int day = array.get(2).asInt();
             int hour = array.size() > 3 ? array.get(3).asInt() : 0;
             int minute = array.size() > 4 ? array.get(4).asInt() : 0;
+
             if (hour > 0 || minute > 0) {
                 LocalDateTime dt = LocalDateTime.of(year, month, day, hour, minute);
-                return dt.format(dateTimeFormatter);
+                return formatSpec != null ? dt.format(getDateTimeFormatter(formatSpec)) : dt.format(dateTimeFormatter);
             } else {
                 LocalDate dt = LocalDate.of(year, month, day);
-                return dt.format(dateFormatter);
+                return formatSpec != null ? dt.format(getDateTimeFormatter(formatSpec)) : dt.format(dateFormatter);
             }
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private static DateTimeFormatter getDateTimeFormatter(String formatSpec) {
+        String pattern = formatSpec.contains("|") ? formatSpec.split("\\|", 2)[1] : formatSpec;
+        return DateTimeFormatter.ofPattern(pattern);
     }
 
     private static String tryFormatDate(String value) {
@@ -143,56 +155,71 @@ public class JsonPreProcessor {
         }
     }
 
-    private static String tryCustomFormat(String value, String pattern) {
-        // Önce tarih mi sayı mı olduğunu anlamaya çalışalım
+    private static boolean isParsableAsDate(String value) {
         try {
-            LocalDateTime dt = LocalDateTime.parse(value);
-            return dt.format(DateTimeFormatter.ofPattern(pattern));
+            LocalDateTime.parse(value);
+            return true;
         } catch (Exception ignored) {}
         try {
-            LocalDate d = LocalDate.parse(value);
-            return d.format(DateTimeFormatter.ofPattern(pattern));
+            LocalDate.parse(value);
+            return true;
         } catch (Exception ignored) {}
-
-        try {
-            BigDecimal val = new BigDecimal(value);
-            DecimalFormat customDecimalFormatter = new DecimalFormat(pattern);
-            return customDecimalFormatter.format(val);
-        } catch (Exception ignored) {}
-
-        return null;
+        return false;
     }
 
-    private static String tryCustomFormat(String value, String typeAndPattern) {
-    if (!typeAndPattern.contains("|")) return null;
-
-    String[] parts = typeAndPattern.split("\\|", 2);
-    if (parts.length != 2) return null;
-
-    String type = parts[0].toUpperCase(Locale.ROOT);
-    String pattern = parts[1];
-
-    try {
-        switch (type) {
-            case "DATE":
-                try {
-                    LocalDateTime dt = LocalDateTime.parse(value);
-                    return dt.format(DateTimeFormatter.ofPattern(pattern));
-                } catch (Exception e) {
-                    LocalDate d = LocalDate.parse(value);
-                    return d.format(DateTimeFormatter.ofPattern(pattern));
-                }
-
-            case "DECIMAL":
-                BigDecimal val = new BigDecimal(value);
-                DecimalFormat customDecimalFormatter = new DecimalFormat(pattern);
-                return customDecimalFormatter.format(val);
-
-            default:
-                return null;
+    private static boolean isParsableAsDecimal(String value) {
+        try {
+            new BigDecimal(value);
+            return true;
+        } catch (Exception ignored) {
+            return false;
         }
-    } catch (Exception e) {
-        return null;
     }
-}
+
+    private static String tryCustomFormat(String value, String formatSpec) {
+        if (formatSpec == null || value == null) return null;
+
+        String type = null;
+        String pattern = null;
+
+        if (formatSpec.contains("|")) {
+            String[] parts = formatSpec.split("\\|", 2);
+            if (parts.length == 2) {
+                type = parts[0].trim().toUpperCase(Locale.ROOT);
+                pattern = parts[1].trim();
+            }
+        } else {
+            pattern = formatSpec.trim();
+            if (isParsableAsDate(value)) {
+                type = "DATE";
+            } else if (isParsableAsDecimal(value)) {
+                type = "DECIMAL";
+            }
+        }
+
+        if (type == null || pattern == null) return null;
+
+        try {
+            switch (type) {
+                case "DATE":
+                    try {
+                        LocalDateTime dt = LocalDateTime.parse(value);
+                        return dt.format(DateTimeFormatter.ofPattern(pattern));
+                    } catch (Exception e) {
+                        LocalDate d = LocalDate.parse(value);
+                        return d.format(DateTimeFormatter.ofPattern(pattern));
+                    }
+
+                case "DECIMAL":
+                    BigDecimal decimal = new BigDecimal(value);
+                    DecimalFormat df = new DecimalFormat(pattern);
+                    return df.format(decimal);
+
+                default:
+                    return null;
+            }
+        } catch (Exception e) {
+            return null;
+        }
+    }
 }
