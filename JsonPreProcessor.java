@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.*;
 
 import java.math.BigDecimal;
 import java.text.DecimalFormat;
+import java.text.DecimalFormatSymbols;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -12,25 +13,21 @@ import java.util.*;
 public class JsonPreProcessor {
 
     private static final ObjectMapper mapper = new ObjectMapper();
-    private static final DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
-    private static final DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy");
-    private static final DecimalFormat decimalFormatter = new DecimalFormat("#,##0.00");
-
-    public static String enrichDatesAndNumbersWithFormattedStrings(String jsonString) {
-        return enrichDatesAndNumbersWithFormattedStrings(jsonString, Collections.emptyMap());
-    }
+    private static final DateTimeFormatter defaultDateTimeFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
+    private static final DateTimeFormatter defaultDateFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy");
+    private static final Locale defaultLocale = new Locale("tr", "TR");
 
     public static String enrichDatesAndNumbersWithFormattedStrings(String jsonString, Map<String, String> customFormatters) {
         try {
             JsonNode rootNode = mapper.readTree(jsonString);
-            JsonNode enrichedNode = enrichNode(rootNode, customFormatters);
+            JsonNode enrichedNode = enrichNode(rootNode, "", customFormatters);
             return mapper.writeValueAsString(enrichedNode);
         } catch (Exception e) {
             throw new RuntimeException("JSON işlenirken hata oluştu: " + e.getMessage(), e);
         }
     }
 
-    private static JsonNode enrichNode(JsonNode node, Map<String, String> customFormatters) {
+    private static JsonNode enrichNode(JsonNode node, String currentPath, Map<String, String> customFormatters) {
         if (node.isObject()) {
             ObjectNode object = (ObjectNode) node;
             Iterator<Map.Entry<String, JsonNode>> fields = object.fields();
@@ -39,54 +36,60 @@ public class JsonPreProcessor {
 
             for (String key : keys) {
                 JsonNode value = object.get(key);
-                JsonNode processedValue = enrichNode(value, customFormatters);
+                String nextPath = currentPath.isEmpty() ? key : currentPath + "." + key;
+
+                JsonNode processedValue = enrichNode(value, nextPath, customFormatters);
                 object.set(key, processedValue);
 
-                String formatSpec = customFormatters.get(key);
-
+                // Metin ise önce tarih sonra sayı olarak dene (custom formatter varsa öncelik verilir)
                 if (value.isTextual()) {
                     String text = value.asText();
 
-                    String customFormatted = tryCustomFormat(text, formatSpec);
-                    if (customFormatted != null) {
-                        object.put(key + "Formatted", customFormatted);
+                    String formatted = tryFormatCustomDate(nextPath, text, customFormatters);
+                    if (formatted == null) {
+                        formatted = tryFormatDate(text);
+                    }
+                    if (formatted != null) {
+                        object.put(key + "Formatted", formatted);
                         continue;
                     }
 
-                    String formattedDate = tryFormatDate(text);
-                    if (formattedDate != null) {
-                        object.put(key + "Formatted", formattedDate);
-                        continue;
+                    formatted = tryFormatCustomDecimal(nextPath, text, customFormatters);
+                    if (formatted == null) {
+                        formatted = tryFormatDecimal(text);
                     }
-
-                    String formattedNumber = tryFormatDecimal(text);
-                    if (formattedNumber != null) {
-                        object.put(key + "Formatted", formattedNumber);
+                    if (formatted != null) {
+                        object.put(key + "Formatted", formatted);
                     }
                 }
 
+                // Array içinde tarih olma durumu
                 if (value.isArray() && isLikelyDateArray(value)) {
-                    String formattedDate = tryParseArrayDate(value, formatSpec);
-                    if (formattedDate != null) {
-                        object.put(key + "Formatted", formattedDate);
+                    String formatted = tryParseArrayDate(value);
+                    if (formatted != null) {
+                        object.put(key + "Formatted", formatted);
                     }
                 }
 
-                if (value.isFloatingPointNumber()) {
-                    if (formatSpec != null && formatSpec.toUpperCase().startsWith("DECIMAL|") || !formatSpec.contains("|")) {
-                        String formatted = tryCustomFormat(String.valueOf(value.doubleValue()), formatSpec);
-                        if (formatted != null) {
-                            object.put(key + "Formatted", formatted);
-                            continue;
+                // Sayısal değerler için (int,long,double, float, BigDecimal) 
+                if (value.isNumber()) {
+                    boolean isFloatingPoint = value.isFloatingPointNumber();
+                    boolean isIntegerLike = value.isInt() || value.isLong() || value.isBigInteger();
+
+                    if (isFloatingPoint || (isIntegerLike && hasMatchingDecimalFormatterForPath(nextPath, customFormatters))) {
+                        BigDecimal number = value.isBigDecimal() ? value.decimalValue() : new BigDecimal(value.asText());
+                        DecimalFormat formatter = getDecimalFormatterForPath(nextPath, customFormatters);
+                        if (formatter != null) {
+                            object.put(key + "Formatted", formatter.format(number));
                         }
                     }
-                    object.put(key + "Formatted", decimalFormatter.format(value.doubleValue()));
                 }
             }
         } else if (node.isArray()) {
             ArrayNode array = (ArrayNode) node;
             for (int i = 0; i < array.size(); i++) {
-                array.set(i, enrichNode(array.get(i), customFormatters));
+                String nextPath = currentPath + "[" + i + "]";
+                array.set(i, enrichNode(array.get(i), nextPath, customFormatters));
             }
         }
         return node;
@@ -97,29 +100,23 @@ public class JsonPreProcessor {
                 array.get(0).isInt() && array.get(1).isInt() && array.get(2).isInt();
     }
 
-    private static String tryParseArrayDate(JsonNode array, String formatSpec) {
+    private static String tryParseArrayDate(JsonNode array) {
         try {
             int year = array.get(0).asInt();
             int month = array.get(1).asInt();
             int day = array.get(2).asInt();
             int hour = array.size() > 3 ? array.get(3).asInt() : 0;
             int minute = array.size() > 4 ? array.get(4).asInt() : 0;
-
             if (hour > 0 || minute > 0) {
                 LocalDateTime dt = LocalDateTime.of(year, month, day, hour, minute);
-                return formatSpec != null ? dt.format(getDateTimeFormatter(formatSpec)) : dt.format(dateTimeFormatter);
+                return dt.format(defaultDateTimeFormatter);
             } else {
                 LocalDate dt = LocalDate.of(year, month, day);
-                return formatSpec != null ? dt.format(getDateTimeFormatter(formatSpec)) : dt.format(dateFormatter);
+                return dt.format(defaultDateFormatter);
             }
         } catch (Exception e) {
             return null;
         }
-    }
-
-    private static DateTimeFormatter getDateTimeFormatter(String formatSpec) {
-        String pattern = formatSpec.contains("|") ? formatSpec.split("\\|", 2)[1] : formatSpec;
-        return DateTimeFormatter.ofPattern(pattern);
     }
 
     private static String tryFormatDate(String value) {
@@ -134,14 +131,16 @@ public class JsonPreProcessor {
             try {
                 LocalDateTime dt = LocalDateTime.parse(value, DateTimeFormatter.ofPattern(pattern));
                 if (dt.getHour() > 0 || dt.getMinute() > 0) {
-                    return dt.format(dateTimeFormatter);
+                    return dt.format(defaultDateTimeFormatter);
                 }
-                return dt.toLocalDate().format(dateFormatter);
-            } catch (Exception ignored) {}
+                return dt.toLocalDate().format(defaultDateFormatter);
+            } catch (Exception ignored) {
+            }
             try {
                 LocalDate d = LocalDate.parse(value, DateTimeFormatter.ofPattern(pattern));
-                return d.format(dateFormatter);
-            } catch (Exception ignored) {}
+                return d.format(defaultDateFormatter);
+            } catch (Exception ignored) {
+            }
         }
         return null;
     }
@@ -149,77 +148,91 @@ public class JsonPreProcessor {
     private static String tryFormatDecimal(String text) {
         try {
             BigDecimal val = new BigDecimal(text);
-            return decimalFormatter.format(val);
+            DecimalFormatSymbols symbols = new DecimalFormatSymbols(defaultLocale);
+            DecimalFormat formatter = new DecimalFormat("#,##0.00", symbols);
+            return formatter.format(val);
         } catch (Exception ignored) {
             return null;
         }
     }
 
-    private static boolean isParsableAsDate(String value) {
-        try {
-            LocalDateTime.parse(value);
-            return true;
-        } catch (Exception ignored) {}
-        try {
-            LocalDate.parse(value);
-            return true;
-        } catch (Exception ignored) {}
+    private static String tryFormatCustomDate(String path, String value, Map<String, String> customFormatters) {
+        for (Map.Entry<String, String> entry : customFormatters.entrySet()) {
+            String key = entry.getKey();
+            String formatStr = entry.getValue();
+            if (pathMatches(key, path) && formatStr.toUpperCase().startsWith("DATE|")) {
+                String[] parts = formatStr.split("\\|");
+                String pattern = parts.length > 1 ? parts[1] : "dd.MM.yyyy";
+                Locale locale = parts.length > 2 ? Locale.forLanguageTag(parts[2]) : defaultLocale;
+                try {
+                    DateTimeFormatter dtf = DateTimeFormatter.ofPattern(pattern, locale);
+                    // Try LocalDateTime first
+                    try {
+                        LocalDateTime dt = LocalDateTime.parse(value, dtf);
+                        return dt.format(dtf);
+                    } catch (Exception e) {
+                        // fallback to LocalDate
+                        LocalDate d = LocalDate.parse(value, dtf);
+                        return d.format(dtf);
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String tryFormatCustomDecimal(String path, String value, Map<String, String> customFormatters) {
+        for (Map.Entry<String, String> entry : customFormatters.entrySet()) {
+            String key = entry.getKey();
+            String formatStr = entry.getValue();
+            if (pathMatches(key, path) && formatStr.toUpperCase().startsWith("DECIMAL|")) {
+                String[] parts = formatStr.split("\\|");
+                String pattern = parts.length > 1 ? parts[1] : "#,##0.00";
+                Locale locale = parts.length > 2 ? Locale.forLanguageTag(parts[2]) : defaultLocale;
+                try {
+                    DecimalFormatSymbols symbols = new DecimalFormatSymbols(locale);
+                    DecimalFormat formatter = new DecimalFormat(pattern, symbols);
+                    BigDecimal val = new BigDecimal(value);
+                    return formatter.format(val);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean hasMatchingDecimalFormatterForPath(String path, Map<String, String> customFormatters) {
+        for (Map.Entry<String, String> entry : customFormatters.entrySet()) {
+            String key = entry.getKey();
+            String formatStr = entry.getValue();
+            if (pathMatches(key, path) && formatStr.toUpperCase().startsWith("DECIMAL|")) {
+                return true;
+            }
+        }
         return false;
     }
 
-    private static boolean isParsableAsDecimal(String value) {
-        try {
-            new BigDecimal(value);
-            return true;
-        } catch (Exception ignored) {
-            return false;
+    private static DecimalFormat getDecimalFormatterForPath(String path, Map<String, String> customFormatters) {
+        for (Map.Entry<String, String> entry : customFormatters.entrySet()) {
+            String key = entry.getKey();
+            String formatStr = entry.getValue();
+            if (pathMatches(key, path) && formatStr.toUpperCase().startsWith("DECIMAL|")) {
+                String[] parts = formatStr.split("\\|");
+                String pattern = parts.length > 1 ? parts[1] : "#,##0.00";
+                Locale locale = parts.length > 2 ? Locale.forLanguageTag(parts[2]) : defaultLocale;
+                DecimalFormatSymbols symbols = new DecimalFormatSymbols(locale);
+                return new DecimalFormat(pattern, symbols);
+            }
         }
+        return null;
     }
 
-    private static String tryCustomFormat(String value, String formatSpec) {
-        if (formatSpec == null || value == null) return null;
-
-        String type = null;
-        String pattern = null;
-
-        if (formatSpec.contains("|")) {
-            String[] parts = formatSpec.split("\\|", 2);
-            if (parts.length == 2) {
-                type = parts[0].trim().toUpperCase(Locale.ROOT);
-                pattern = parts[1].trim();
-            }
-        } else {
-            pattern = formatSpec.trim();
-            if (isParsableAsDate(value)) {
-                type = "DATE";
-            } else if (isParsableAsDecimal(value)) {
-                type = "DECIMAL";
-            }
-        }
-
-        if (type == null || pattern == null) return null;
-
-        try {
-            switch (type) {
-                case "DATE":
-                    try {
-                        LocalDateTime dt = LocalDateTime.parse(value);
-                        return dt.format(DateTimeFormatter.ofPattern(pattern));
-                    } catch (Exception e) {
-                        LocalDate d = LocalDate.parse(value);
-                        return d.format(DateTimeFormatter.ofPattern(pattern));
-                    }
-
-                case "DECIMAL":
-                    BigDecimal decimal = new BigDecimal(value);
-                    DecimalFormat df = new DecimalFormat(pattern);
-                    return df.format(decimal);
-
-                default:
-                    return null;
-            }
-        } catch (Exception e) {
-            return null;
-        }
+    private static boolean pathMatches(String pattern, String path) {
+        if (pattern.equals(path)) return true;
+        // Noktaları kaçış yap, *'ları [^.]+ ile değiştir
+        String regex = "^" + pattern.replace(".", "\\.").replace("*", "[^.]+") + "$";
+        return path.matches(regex);
     }
+
 }
