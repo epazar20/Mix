@@ -16,6 +16,7 @@ public class JsonPreProcessor {
     private static final DateTimeFormatter defaultDateTimeFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
     private static final DateTimeFormatter defaultDateFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy");
     private static final Locale defaultLocale = new Locale("tr", "TR");
+    private static final DecimalFormat decimalFormatter = new DecimalFormat("#,##0.00", new DecimalFormatSymbols(defaultLocale));
 
     public static String enrichDatesAndNumbersWithFormattedStrings(String jsonString, Map<String, String> customFormatters) {
         try {
@@ -23,7 +24,7 @@ public class JsonPreProcessor {
             JsonNode enrichedNode = enrichNode(rootNode, "", customFormatters);
             return mapper.writeValueAsString(enrichedNode);
         } catch (Exception e) {
-            throw new RuntimeException("JSON işlenirken hata oluştu: " + e.getMessage(), e);
+            throw new RuntimeException("JSON i\u015flenirken hata olu\u015ftu: " + e.getMessage(), e);
         }
     }
 
@@ -41,7 +42,6 @@ public class JsonPreProcessor {
                 JsonNode processedValue = enrichNode(value, nextPath, customFormatters);
                 object.set(key, processedValue);
 
-                // Metin ise önce tarih sonra sayı olarak dene (custom formatter varsa öncelik verilir)
                 if (value.isTextual()) {
                     String text = value.asText();
 
@@ -63,7 +63,6 @@ public class JsonPreProcessor {
                     }
                 }
 
-                // Array içinde tarih olma durumu
                 if (value.isArray() && isLikelyDateArray(value)) {
                     String formatted = tryParseArrayDate(value);
                     if (formatted != null) {
@@ -71,17 +70,16 @@ public class JsonPreProcessor {
                     }
                 }
 
-                // Sayısal değerler için (int,long,double, float, BigDecimal) 
                 if (value.isNumber()) {
                     boolean isFloatingPoint = value.isFloatingPointNumber();
                     boolean isIntegerLike = value.isInt() || value.isLong() || value.isBigInteger();
 
-                    if (isFloatingPoint || (isIntegerLike && hasMatchingDecimalFormatterForPath(nextPath, customFormatters))) {
-                        BigDecimal number = value.isBigDecimal() ? value.decimalValue() : new BigDecimal(value.asText());
+                    if (isFloatingPoint) {
+                        object.put(key + "Formatted", decimalFormatter.format(value.asDouble()));
+                    } else if (isIntegerLike && hasMatchingDecimalFormatterForPath(nextPath, customFormatters)) {
                         DecimalFormat formatter = getDecimalFormatterForPath(nextPath, customFormatters);
-                        if (formatter != null) {
-                            object.put(key + "Formatted", formatter.format(number));
-                        }
+                        BigDecimal number = new BigDecimal(value.asText());
+                        object.put(key + "Formatted", formatter.format(number));
                     }
                 }
             }
@@ -134,13 +132,11 @@ public class JsonPreProcessor {
                     return dt.format(defaultDateTimeFormatter);
                 }
                 return dt.toLocalDate().format(defaultDateFormatter);
-            } catch (Exception ignored) {
-            }
+            } catch (Exception ignored) {}
             try {
                 LocalDate d = LocalDate.parse(value, DateTimeFormatter.ofPattern(pattern));
                 return d.format(defaultDateFormatter);
-            } catch (Exception ignored) {
-            }
+            } catch (Exception ignored) {}
         }
         return null;
     }
@@ -148,9 +144,7 @@ public class JsonPreProcessor {
     private static String tryFormatDecimal(String text) {
         try {
             BigDecimal val = new BigDecimal(text);
-            DecimalFormatSymbols symbols = new DecimalFormatSymbols(defaultLocale);
-            DecimalFormat formatter = new DecimalFormat("#,##0.00", symbols);
-            return formatter.format(val);
+            return decimalFormatter.format(val);
         } catch (Exception ignored) {
             return null;
         }
@@ -166,17 +160,14 @@ public class JsonPreProcessor {
                 Locale locale = parts.length > 2 ? Locale.forLanguageTag(parts[2]) : defaultLocale;
                 try {
                     DateTimeFormatter dtf = DateTimeFormatter.ofPattern(pattern, locale);
-                    // Try LocalDateTime first
                     try {
                         LocalDateTime dt = LocalDateTime.parse(value, dtf);
                         return dt.format(dtf);
                     } catch (Exception e) {
-                        // fallback to LocalDate
                         LocalDate d = LocalDate.parse(value, dtf);
                         return d.format(dtf);
                     }
-                } catch (Exception ignored) {
-                }
+                } catch (Exception ignored) {}
             }
         }
         return null;
@@ -195,8 +186,7 @@ public class JsonPreProcessor {
                     DecimalFormat formatter = new DecimalFormat(pattern, symbols);
                     BigDecimal val = new BigDecimal(value);
                     return formatter.format(val);
-                } catch (Exception ignored) {
-                }
+                } catch (Exception ignored) {}
             }
         }
         return null;
@@ -230,7 +220,6 @@ public class JsonPreProcessor {
 
     private static boolean pathMatches(String pattern, String path) {
         if (pattern.equals(path)) return true;
-        // Noktaları kaçış yap, *'ları [^.]+ ile değiştir
         String regex = "^" + pattern.replace(".", "\\.").replace("*", "[^.]+") + "$";
         return path.matches(regex);
     }
